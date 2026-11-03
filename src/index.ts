@@ -34,5 +34,6 @@ export type {
   WorkbookExportResult,
   WorkbookImportResult,
   WorkbookLambda,
+  WorkbookListResult,
   WorkbookNameFailure,
 } from "./workbook.ts";

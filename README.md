@@ -35,6 +35,8 @@ git clone https://github.com/lucas0623/excel-lambda-function-library.git
 }
 ```
 
-Replace the path with your clone. The first start saves it to `%LOCALAPPDATA%\lfm-mcp\config.json`. After that, remove the `args` line and restart the MCP server.
+Replace the path with your clone and keep the `args` line. The server reads that path on every start and does not store a second copy. In JSON, write each backslash twice: `C:\\path\\to\\Functions`.
 
 4. Enable the `lfm` server in Cursor settings. A new chat can then call `library_list`, `library_get`, `library_validate`, `library_upsert`, `library_delete`, `library_closure`, `workbook_list`, `workbook_import`, and `workbook_export`.
+
+`workbook_list`, `workbook_import`, and `workbook_export` can use a workbook that is already open in desktop Excel. Leave out `workbookPath`, or pass `active`, to use the active workbook. A path that is already open is saved and left open. A closed file is opened in a separate Excel, saved, and closed.

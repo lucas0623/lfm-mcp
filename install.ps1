@@ -38,4 +38,4 @@ Write-Host @'
   }
 }
 '@
-Write-Host "After one successful start, the args line can be removed."
+Write-Host 'Keep the args line. In JSON, a path uses \\ for each backslash, as in the example above.'

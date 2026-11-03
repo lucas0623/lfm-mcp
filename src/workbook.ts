@@ -37,10 +37,23 @@ export interface WorkbookImportResult {
   failed: WorkbookNameFailure[];
   missing: string[];
   formulas: Array<{ name: string; formula: string; comment: string; scope: NamedItemScope; sheet: string | null }>;
+  workbookPath: string;
+  /** True when the workbook was already open in desktop Excel. That Excel is left running. */
+  attached: boolean;
+  saved: boolean;
+  message?: string;
+}
+
+export interface WorkbookListResult {
+  workbookPath: string;
+  attached: boolean;
+  names: WorkbookLambda[];
 }
 
 export interface WorkbookExportResult extends LibraryWriteResult {
   missing: string[];
+  workbookPath: string;
+  attached: boolean;
 }
 
 interface ExcelCommandResult {
@@ -49,6 +62,27 @@ interface ExcelCommandResult {
   names: WorkbookLambda[];
   imported: string[];
   failed: WorkbookNameFailure[];
+  workbookPath?: string;
+  attached?: boolean;
+  saved?: boolean;
+}
+
+function workbookRequest(workbookPath?: string): { workbookPath?: string; useActive: boolean } {
+  const trimmed = workbookPath?.trim() ?? "";
+  if (!trimmed || trimmed.toLowerCase() === "active") return { useActive: true };
+  return { workbookPath: assertWorkbookPath(trimmed), useActive: false };
+}
+
+function excelBody(
+  action: string,
+  request: { workbookPath?: string; useActive: boolean },
+  extra?: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    action,
+    ...(request.useActive ? { useActive: true } : { workbookPath: request.workbookPath }),
+    ...extra,
+  };
 }
 
 function assertWorkbookPath(workbookPath: string): string {
@@ -133,15 +167,19 @@ function normalizeDefinedNameFormula(formula: string): string {
   return formula.replace(/^=_xlfn\.LAMBDA/i, "=LAMBDA").replaceAll("_xlpm.", "");
 }
 
-export async function listWorkbookLambdas(workbookPath: string): Promise<WorkbookLambda[]> {
-  const resolved = assertWorkbookPath(workbookPath);
-  const result = await excelCommand({ action: "list", workbookPath: resolved });
-  return (result.names ?? []).map((lambda) => ({
-    ...lambda,
-    formula: normalizeDefinedNameFormula(lambda.formula || ""),
-    comment: lambda.comment || "",
-    sheet: lambda.sheet ?? null,
-  }));
+export async function listWorkbookLambdas(workbookPath?: string): Promise<WorkbookListResult> {
+  const request = workbookRequest(workbookPath);
+  const result = await excelCommand(excelBody("list", request));
+  return {
+    workbookPath: result.workbookPath || request.workbookPath || "",
+    attached: Boolean(result.attached),
+    names: (result.names ?? []).map((lambda) => ({
+      ...lambda,
+      formula: normalizeDefinedNameFormula(lambda.formula || ""),
+      comment: lambda.comment || "",
+      sheet: lambda.sheet ?? null,
+    })),
+  };
 }
 
 function orderForImport(functions: readonly LibraryFunction[]): LibraryFunction[] {
@@ -167,7 +205,7 @@ function orderForImport(functions: readonly LibraryFunction[]): LibraryFunction[
 }
 
 export async function importToWorkbook(options: {
-  workbookPath: string;
+  workbookPath?: string;
   names: readonly string[];
   scope: NamedItemScope;
   sheet?: string;
@@ -179,7 +217,7 @@ export async function importToWorkbook(options: {
   if (options.scope === "Worksheet" && !options.sheet) {
     throw new LfmError("Worksheet scope requires a sheet name.");
   }
-  const workbookPath = assertWorkbookPath(options.workbookPath);
+  const request = workbookRequest(options.workbookPath);
   const closure = libraryClosure(options.names, options.libraryDir);
   if (closure.functions.length === 0) {
     throw new LfmError(`None of the requested functions are in the library: ${options.names.join(", ")}.`);
@@ -193,27 +231,28 @@ export async function importToWorkbook(options: {
     sheet: options.scope === "Worksheet" ? options.sheet ?? null : null,
   }));
 
-  const result = await excelCommand({
-    action: "write",
-    workbookPath,
-    items: formulas,
-  });
+  const result = await excelCommand(excelBody("write", request, { items: formulas }));
 
   return {
     imported: result.imported ?? [],
     failed: result.failed ?? [],
     missing: closure.missing,
     formulas,
+    workbookPath: result.workbookPath || request.workbookPath || "",
+    attached: Boolean(result.attached),
+    saved: Boolean(result.saved),
+    ...(result.message ? { message: result.message } : {}),
   };
 }
 
 export async function exportFromWorkbook(options: {
-  workbookPath: string;
+  workbookPath?: string;
   names?: readonly string[];
   sheet?: string;
   libraryDir?: string;
 }): Promise<WorkbookExportResult> {
-  const lambdas = await listWorkbookLambdas(options.workbookPath);
+  const listed = await listWorkbookLambdas(options.workbookPath);
+  const lambdas = listed.names;
   const byName = new Map(lambdas.map((lambda) => [lambda.name.toLowerCase(), lambda]));
   const workbookNames = lambdas.filter((lambda) => lambda.scope === "Workbook").map((lambda) => lambda.name);
 
@@ -279,5 +318,11 @@ export async function exportFromWorkbook(options: {
     });
   }
 
-  return { ...written, warnings, missing };
+  return {
+    ...written,
+    warnings,
+    missing,
+    workbookPath: listed.workbookPath,
+    attached: listed.attached,
+  };
 }

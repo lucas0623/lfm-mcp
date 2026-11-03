@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
-import { helpText, readCli, rememberLibrary } from "./config.ts";
+import { helpText, readCli, useLibrary } from "./config.ts";
 import * as z from "zod/v4";
 import {
   deleteFunction,
@@ -20,7 +20,16 @@ import {
 const libraryDir = z
   .string()
   .optional()
-  .describe("Folder of Functions/*.json. Defaults to LFM_LIBRARY_DIR, then this repo's lambda-function-library-doc/Functions.");
+  .describe(
+    "Folder of Functions/*.json. Defaults to the MCP server --library argument, then LFM_LIBRARY_DIR, then this repo's lambda-function-library-doc/Functions."
+  );
+
+const workbookPath = z
+  .string()
+  .optional()
+  .describe(
+    'Absolute path to an .xlsx or .xlsm file. Omit, or pass "active", to use the workbook active in desktop Excel. A path that is already open is updated in place and left open.'
+  );
 
 const scope = z.enum(["Workbook", "Worksheet"]).describe("Workbook removes {ref}. Worksheet replaces {ref} with the sheet prefix.");
 
@@ -146,10 +155,8 @@ export function createServer(): McpServer {
     {
       title: "List workbook LAMBDAs",
       description:
-        "Read LAMBDA defined names from an .xlsx or .xlsm file through desktop Excel. Does not calculate the formulas and does not use the task pane.",
-      inputSchema: z.object({
-        workbookPath: z.string().describe("Absolute path to an .xlsx or .xlsm file."),
-      }),
+        "Read LAMBDA defined names from an .xlsx or .xlsm file through desktop Excel. Does not calculate the formulas and does not use the task pane. Omit workbookPath, or pass active, to read the workbook that is active in Excel. An open file is left open.",
+      inputSchema: z.object({ workbookPath }),
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async (args) => run(() => listWorkbookLambdas(args.workbookPath))
@@ -160,9 +167,9 @@ export function createServer(): McpServer {
     {
       title: "Import library into workbook",
       description:
-        "Write library functions into a workbook as defined names. {ref} becomes the sheet prefix at Worksheet scope, and is removed at Workbook scope. Dependencies are included. Requires desktop Excel. The file must already exist.",
+        "Write library functions into a workbook as defined names. {ref} becomes the sheet prefix at Worksheet scope, and is removed at Workbook scope. Dependencies are included. Requires desktop Excel. The file must already exist, unless workbookPath is omitted or active, which uses the workbook open in Excel. An already-open file is saved and left open.",
       inputSchema: z.object({
-        workbookPath: z.string().describe("Absolute path to an existing .xlsx or .xlsm file."),
+        workbookPath,
         names: z.array(z.string()).min(1).describe("Library function names to import."),
         scope,
         sheet: z.string().optional().describe("Required when scope is Worksheet. Ignored for Workbook."),
@@ -187,9 +194,9 @@ export function createServer(): McpServer {
     {
       title: "Export workbook LAMBDAs",
       description:
-        "Read LAMBDA defined names from a workbook and write them into the library as JSON. Sheet!Name( on the given sheet becomes {ref}Name(. Pass sheet for workbook-scoped names that still use a sheet prefix. Requires desktop Excel.",
+        "Read LAMBDA defined names from a workbook and write them into the library as JSON. Sheet!Name( on the given sheet becomes {ref}Name(. Pass sheet for workbook-scoped names that still use a sheet prefix. Requires desktop Excel. Omit workbookPath, or pass active, to read the workbook that is active in Excel. An open file is left open.",
       inputSchema: z.object({
-        workbookPath: z.string().describe("Absolute path to an existing .xlsx or .xlsm file."),
+        workbookPath,
         names: z
           .array(z.string())
           .optional()
@@ -231,7 +238,7 @@ if (isDirectRun()) {
       console.error(helpText);
       process.exit(0);
     }
-    if (cli.library) rememberLibrary(cli.library);
+    if (cli.library) useLibrary(cli.library);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(message);

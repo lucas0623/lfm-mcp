@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { savedLibraryDir } from "./config.ts";
 import {
   allChildrenOf,
   findLibraryChildren,
@@ -63,13 +62,13 @@ const packageRoot = moduleDir ? path.resolve(moduleDir, "..") : path.dirname(pro
 const repoRoot = path.resolve(packageRoot, "..");
 
 export function resolveLibraryDir(libraryDir?: string): string {
-  const raw = libraryDir || process.env.LFM_LIBRARY_DIR || savedLibraryDir();
+  const raw = libraryDir || process.env.LFM_LIBRARY_DIR;
   let resolved: string;
   if (!raw) {
     const fallback = path.join(repoRoot, "lambda-function-library-doc", "Functions");
     if (existsSync(fallback) && statSync(fallback).isDirectory()) return fallback;
     throw new LfmError(
-      'No library folder is set. Run lfm-mcp --library "D:\\path\\to\\Functions" once, or set LFM_LIBRARY_DIR.'
+      "No library folder is set. Pass --library in the MCP server args, or set LFM_LIBRARY_DIR."
     );
   } else if (path.isAbsolute(raw)) {
     resolved = raw;
@@ -81,7 +80,7 @@ export function resolveLibraryDir(libraryDir?: string): string {
 
   if (!existsSync(resolved) || !statSync(resolved).isDirectory()) {
     throw new LfmError(
-      `Library folder not found: ${resolved}. Pass --library or set LFM_LIBRARY_DIR to the Functions folder.`
+      `Library folder not found: ${resolved}. Pass --library in the MCP server args, or set LFM_LIBRARY_DIR, to the Functions folder.`
     );
   }
   return resolved;
