@@ -1,0 +1,29 @@
+{
+  "name": "lfm-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "API and MCP server for the Lambda Function Manager library.",
+  "bin": {
+    "lfm-mcp": "./bin/lfm-mcp.js"
+  },
+  "scripts": {
+    "start": "tsx src/mcp.ts",
+    "build:exe": "node scripts/build-exe.mjs",
+    "test": "tsx --test test/formula.test.ts test/library.test.ts test/config.test.ts test/formula-sync.test.ts test/mcp.test.ts",
+    "test:com": "tsx --test test/workbook.com.test.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6",
+    "tsx": "^4.20.6"
+  }
+}
