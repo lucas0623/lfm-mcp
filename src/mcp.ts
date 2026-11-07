@@ -63,18 +63,34 @@ export function createServer(): McpServer {
     {
       title: "List Lambda library",
       description:
-        "List Lambda functions in the library folder. Returns name, comment, children, and allChildren. Use library_get for the formula.",
-      inputSchema: z.object({ libraryDir }),
+        "List Lambda functions in the library folder. Results include name, comment, children, allChildren, role, the effective group, groupAssigned, and tags. The default list returns every function, including helpers. Use library_get for the formula.",
+      inputSchema: z.object({
+        libraryDir,
+        role: z
+          .enum(["public", "helper"])
+          .optional()
+          .describe("Return only functions with this effective role. Omit to include every function."),
+        group: z.string().optional().describe("Return only functions whose effective group equals this value."),
+        tag: z.string().optional().describe("Return only functions that include this effective tag."),
+      }),
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
-    async (args) => run(() => listFunctions(args.libraryDir))
+    async (args) =>
+      run(() =>
+        listFunctions(args.libraryDir, {
+          role: args.role,
+          group: args.group,
+          tag: args.tag,
+        })
+      )
   );
 
   server.registerTool(
     "library_get",
     {
       title: "Get Lambda function",
-      description: "Read one library function, including its formula. Child calls in the formula use {ref}Name(.",
+      description:
+        "Read one library function, including its formula, role, effective group, groupAssigned, and tags. Child calls in the formula use {ref}Name(.",
       inputSchema: z.object({
         name: z.string().describe("Function name, matching the JSON file name."),
         libraryDir,
@@ -104,11 +120,23 @@ export function createServer(): McpServer {
     {
       title: "Write Lambda function",
       description:
-        "Create or overwrite one library JSON file. The formula must start with =LAMBDA and call each child as {ref}Name(. children and allChildren are computed. A call written as Sheet!Name( or Name( is rejected.",
+        "Create or update one library JSON file. The formula must start with =LAMBDA and call each child as {ref}Name(. children and allChildren are computed. A call written as Sheet!Name( or Name( is rejected. On an existing file, omitted role, group, tags, comment, and any other keys are kept.",
       inputSchema: z.object({
         name: z.string().describe("Function name. Written to <name>.json."),
         formula: z.string().describe("Library formula starting with =LAMBDA. Child calls are {ref}Name(."),
-        comment: z.string().optional().describe("Description stored in the JSON file."),
+        comment: z
+          .string()
+          .optional()
+          .describe("Description stored in the JSON file. On update, omit this to keep the stored comment."),
+        role: z.enum(["public", "helper"]).optional().describe("Stored role. Omit to keep the stored role."),
+        group: z
+          .string()
+          .optional()
+          .describe("Stored group override. A blank string removes the stored group. Omit to keep the stored group."),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe("An empty array clears tags. Omit to keep stored tags."),
         libraryDir,
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -116,7 +144,14 @@ export function createServer(): McpServer {
     async (args) =>
       run(() =>
         upsertFunction(
-          { name: args.name, formula: args.formula, comment: args.comment },
+          {
+            name: args.name,
+            formula: args.formula,
+            comment: args.comment,
+            role: args.role,
+            group: args.group,
+            tags: args.tags,
+          },
           args.libraryDir
         )
       )
@@ -194,7 +229,7 @@ export function createServer(): McpServer {
     {
       title: "Export workbook LAMBDAs",
       description:
-        "Read LAMBDA defined names from a workbook and write them into the library as JSON. Sheet!Name( on the given sheet becomes {ref}Name(. Pass sheet for workbook-scoped names that still use a sheet prefix. Requires desktop Excel. Omit workbookPath, or pass active, to read the workbook that is active in Excel. An open file is left open.",
+        "Read LAMBDA defined names from a workbook and write them into the library as JSON. Sheet!Name( on the given sheet becomes {ref}Name(. Pass sheet for workbook-scoped names that still use a sheet prefix. Requires desktop Excel. Omit workbookPath, or pass active, to read the workbook that is active in Excel. An open file is left open. An existing file keeps stored role, group, tags, and any other keys. formula, children, and allChildren are updated. comment is updated because export always sends the Excel comment.",
       inputSchema: z.object({
         workbookPath,
         names: z

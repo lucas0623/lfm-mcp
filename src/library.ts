@@ -14,12 +14,22 @@ export class LfmError extends Error {
   }
 }
 
+export type LibraryRole = "public" | "helper";
+
 export interface LibraryFunction {
   name: string;
   formula: string;
   comment: string;
   children: string[];
   allChildren: string[];
+  /** Effective role. Missing or invalid stored values are public. */
+  role: LibraryRole;
+  /** Effective group. A stored override, the name prefix, or Ungrouped. */
+  group: string;
+  /** True only when the file stores a non-empty string group. */
+  groupAssigned: boolean;
+  /** Effective tags. Missing or invalid stored values are an empty array. */
+  tags: string[];
 }
 
 export interface LibraryIssue {
@@ -30,8 +40,19 @@ export interface LibraryIssue {
 }
 
 export interface LibraryList {
-  functions: Array<Pick<LibraryFunction, "name" | "comment" | "children" | "allChildren">>;
+  functions: Array<
+    Pick<
+      LibraryFunction,
+      "name" | "comment" | "children" | "allChildren" | "role" | "group" | "groupAssigned" | "tags"
+    >
+  >;
   errors: LibraryIssue[];
+}
+
+export interface LibraryListFilter {
+  role?: string;
+  group?: string;
+  tag?: string;
 }
 
 export interface LibraryValidation {
@@ -55,7 +76,18 @@ export interface LibraryInput {
   name: string;
   formula: string;
   comment?: string;
+  role?: LibraryRole;
+  /** Stored group override. An empty string removes the stored group. */
+  group?: string;
+  tags?: string[];
 }
+
+interface StoredFunction extends LibraryFunction {
+  /** Parsed JSON object, including unknown keys and invalid metadata. */
+  source: Record<string, unknown>;
+}
+
+const metadataChecks = new Set(["role", "group", "tags"]);
 
 const moduleDir = import.meta.url ? path.dirname(fileURLToPath(import.meta.url)) : undefined;
 const packageRoot = moduleDir ? path.resolve(moduleDir, "..") : path.dirname(process.execPath);
@@ -116,6 +148,72 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
+function effectiveRole(value: unknown): LibraryRole {
+  return value === "public" || value === "helper" ? value : "public";
+}
+
+function hasStoredGroup(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function effectiveGroup(name: string, value: unknown): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  const dot = name.indexOf(".");
+  if (dot > 0) return name.slice(0, dot);
+  return "Ungrouped";
+}
+
+function effectiveTags(value: unknown): string[] {
+  return isStringArray(value) ? value : [];
+}
+
+function syncView(record: StoredFunction): void {
+  const source = record.source;
+  if (typeof source.name === "string") record.name = source.name;
+  if (typeof source.formula === "string") record.formula = source.formula;
+  record.comment = typeof source.comment === "string" ? source.comment : "";
+  record.children = isStringArray(source.children) ? source.children : [];
+  record.allChildren = isStringArray(source.allChildren) ? source.allChildren : [];
+  record.role = effectiveRole(source.role);
+  record.group = effectiveGroup(record.name, source.group);
+  record.groupAssigned = hasStoredGroup(source.group);
+  record.tags = effectiveTags(source.tags);
+}
+
+function storedFrom(source: Record<string, unknown>): StoredFunction {
+  const record: StoredFunction = {
+    name: typeof source.name === "string" ? source.name : "",
+    formula: typeof source.formula === "string" ? source.formula : "",
+    comment: "",
+    children: [],
+    allChildren: [],
+    role: "public",
+    group: "Ungrouped",
+    groupAssigned: false,
+    tags: [],
+    source,
+  };
+  syncView(record);
+  return record;
+}
+
+function toPublic(record: StoredFunction): LibraryFunction {
+  return {
+    name: record.name,
+    formula: record.formula,
+    comment: record.comment,
+    children: record.children,
+    allChildren: record.allChildren,
+    role: record.role,
+    group: record.group,
+    groupAssigned: record.groupAssigned,
+    tags: record.tags,
+  };
+}
+
 function assertFunctionName(name: string): void {
   if (!name || name === "." || name === ".." || /[<>:"/\\|?*\u0000-\u001f]/.test(name)) {
     throw new LfmError(`"${name}" cannot be used as a function name or file name.`);
@@ -134,8 +232,22 @@ function existingFile(libraryDir: string, name: string): string | undefined {
 
 interface ParsedFile {
   file: string;
-  record: LibraryFunction | null;
+  record: StoredFunction | null;
   issues: LibraryIssue[];
+}
+
+function metadataIssues(file: string, body: Record<string, unknown>): LibraryIssue[] {
+  const issues: LibraryIssue[] = [];
+  if ("role" in body && body.role !== "public" && body.role !== "helper") {
+    issues.push(issue(file, "role", `${file} role must be "public" or "helper".`));
+  }
+  if ("group" in body && (typeof body.group !== "string" || body.group.trim().length === 0)) {
+    issues.push(issue(file, "group", `${file} group must be a non-empty string.`));
+  }
+  if ("tags" in body && !isStringArray(body.tags)) {
+    issues.push(issue(file, "tags", `${file} tags must be an array of strings.`));
+  }
+  return issues;
 }
 
 function parseFile(libraryDir: string, file: string): ParsedFile {
@@ -195,6 +307,8 @@ function parseFile(libraryDir: string, file: string): ParsedFile {
     return { file, record: null, issues };
   }
 
+  issues.push(...metadataIssues(file, body));
+
   const refs = findLibraryChildren(body.formula, body.name);
   const childSet = new Set(body.children);
   for (const ref of refs) {
@@ -217,21 +331,11 @@ function parseFile(libraryDir: string, file: string): ParsedFile {
     }
   }
 
-  return {
-    file,
-    record: {
-      name: body.name,
-      formula: body.formula,
-      comment: body.comment,
-      children: body.children,
-      allChildren: body.allChildren,
-    },
-    issues,
-  };
+  return { file, record: storedFrom(body), issues };
 }
 
-function loadAll(libraryDir: string): { records: Map<string, LibraryFunction>; issues: LibraryIssue[] } {
-  const records = new Map<string, LibraryFunction>();
+function loadAll(libraryDir: string): { records: Map<string, StoredFunction>; issues: LibraryIssue[] } {
+  const records = new Map<string, StoredFunction>();
   const issues: LibraryIssue[] = [];
   for (const file of jsonFiles(libraryDir)) {
     const parsed = parseFile(libraryDir, file);
@@ -252,21 +356,11 @@ function missingChildWarnings(record: LibraryFunction, known: ReadonlyMap<string
     );
 }
 
-function serialize(record: LibraryFunction): string {
-  return `${JSON.stringify(
-    {
-      name: record.name,
-      formula: record.formula,
-      comment: record.comment,
-      children: record.children,
-      allChildren: record.allChildren,
-    },
-    null,
-    2
-  )}\n`;
+function serialize(record: StoredFunction): string {
+  return `${JSON.stringify(record.source, null, 2)}\n`;
 }
 
-function writeRecord(libraryDir: string, record: LibraryFunction): void {
+function writeRecord(libraryDir: string, record: StoredFunction): void {
   const current = existingFile(libraryDir, record.name);
   const expected = `${record.name}.json`;
   if (current && path.basename(current) !== expected) {
@@ -277,8 +371,8 @@ function writeRecord(libraryDir: string, record: LibraryFunction): void {
   writeFileSync(fileFor(libraryDir, record.name), serialize(record), "utf8");
 }
 
-function propagateAllChildren(records: Map<string, LibraryFunction>, start: string): LibraryFunction[] {
-  const written: LibraryFunction[] = [];
+function propagateAllChildren(records: Map<string, StoredFunction>, start: string): StoredFunction[] {
+  const written: StoredFunction[] = [];
   const queue = [start];
   const seen = new Set<string>();
 
@@ -293,6 +387,7 @@ function propagateAllChildren(records: Map<string, LibraryFunction>, start: stri
     const changed = !sameSet(record.allChildren, nextAll);
     if (changed) {
       record.allChildren = nextAll;
+      record.source.allChildren = nextAll;
       written.push(record);
     }
     if (current === start || changed) {
@@ -305,11 +400,35 @@ function propagateAllChildren(records: Map<string, LibraryFunction>, start: stri
   return written;
 }
 
-export function listFunctions(libraryDir?: string): LibraryList {
+function matchesFilter(record: LibraryFunction, filter: LibraryListFilter | undefined): boolean {
+  if (!filter) return true;
+  if (filter.role !== undefined && record.role !== filter.role) return false;
+  if (filter.group !== undefined && record.group !== filter.group) return false;
+  if (filter.tag !== undefined && !record.tags.includes(filter.tag)) return false;
+  return true;
+}
+
+export function listFunctions(libraryDir?: string, filter?: LibraryListFilter): LibraryList {
+  if (filter?.role !== undefined && filter.role !== "public" && filter.role !== "helper") {
+    throw new LfmError('Role filter must be "public" or "helper".');
+  }
   const dir = resolveLibraryDir(libraryDir);
   const { records, issues } = loadAll(dir);
   const functions = Array.from(records.values())
-    .map(({ name, comment, children, allChildren }) => ({ name, comment, children, allChildren }))
+    .map((record) => {
+      const pub = toPublic(record);
+      return {
+        name: pub.name,
+        comment: pub.comment,
+        children: pub.children,
+        allChildren: pub.allChildren,
+        role: pub.role,
+        group: pub.group,
+        groupAssigned: pub.groupAssigned,
+        tags: pub.tags,
+      };
+    })
+    .filter((record) => matchesFilter(record, filter))
     .sort((left, right) => left.name.localeCompare(right.name));
   return { functions, errors: issues.filter((item) => item.severity === "error") };
 }
@@ -320,14 +439,15 @@ export function getFunction(name: string, libraryDir?: string): LibraryFunction 
   const file = existingFile(dir, name);
   if (!file) throw new LfmError(`${name}.json was not found in ${dir}.`);
   const parsed = parseFile(dir, path.basename(file));
-  const errors = parsed.issues.filter((item) => item.severity === "error");
-  if (!parsed.record || errors.length > 0) {
-    throw new LfmError(errors.map((item) => item.message).join(" "));
+  const blocking = parsed.issues.filter((item) => item.severity === "error" && !metadataChecks.has(item.check));
+  if (!parsed.record || blocking.length > 0) {
+    const messages = (blocking.length > 0 ? blocking : parsed.issues).map((item) => item.message);
+    throw new LfmError(messages.join(" ") || `${name}.json could not be read.`);
   }
   if (parsed.record.name !== name) {
     throw new LfmError(`Use the name stored in the file: ${parsed.record.name}.`);
   }
-  return parsed.record;
+  return toPublic(parsed.record);
 }
 
 export function validateLibrary(libraryDir?: string, names?: readonly string[]): LibraryValidation {
@@ -342,6 +462,45 @@ export function validateLibrary(libraryDir?: string, names?: readonly string[]):
   return { ok: relevant.every((item) => item.severity !== "error"), issues: relevant };
 }
 
+function assertMetadataInput(input: LibraryInput): void {
+  if (input.role !== undefined && input.role !== "public" && input.role !== "helper") {
+    throw new LfmError(`${input.name} role must be "public" or "helper".`);
+  }
+  if (input.group !== undefined && typeof input.group !== "string") {
+    throw new LfmError(`${input.name} group must be a string.`);
+  }
+  if (input.tags !== undefined && !isStringArray(input.tags)) {
+    throw new LfmError(`${input.name} tags must be an array of strings.`);
+  }
+}
+
+function applyInput(record: StoredFunction, input: LibraryInput, children: string[]): void {
+  record.source.formula = input.formula;
+  record.source.children = children;
+  if (input.comment !== undefined) record.source.comment = input.comment;
+  if (input.role !== undefined) record.source.role = input.role;
+  if (input.group !== undefined) {
+    if (input.group.trim() === "") delete record.source.group;
+    else record.source.group = input.group;
+  }
+  if (input.tags !== undefined) record.source.tags = input.tags.slice();
+  syncView(record);
+}
+
+function createRecord(input: LibraryInput, children: string[]): StoredFunction {
+  const source: Record<string, unknown> = {
+    name: input.name,
+    formula: input.formula,
+    comment: input.comment ?? "",
+    children,
+    allChildren: [],
+  };
+  if (input.role !== undefined) source.role = input.role;
+  if (input.group !== undefined && input.group.trim() !== "") source.group = input.group;
+  if (input.tags !== undefined) source.tags = input.tags.slice();
+  return storedFrom(source);
+}
+
 export function upsertFunctions(inputs: readonly LibraryInput[], libraryDir?: string): LibraryWriteResult {
   if (inputs.length === 0) {
     throw new LfmError("upsertFunctions requires at least one function.");
@@ -349,10 +508,11 @@ export function upsertFunctions(inputs: readonly LibraryInput[], libraryDir?: st
   const dir = resolveLibraryDir(libraryDir);
   const { records } = loadAll(dir);
   const warnings: LibraryIssue[] = [];
-  const written = new Map<string, LibraryFunction>();
+  const written = new Map<string, StoredFunction>();
 
   for (const input of inputs) {
     assertFunctionName(input.name);
+    assertMetadataInput(input);
     if (typeof input.formula !== "string" || !input.formula.startsWith("=LAMBDA")) {
       throw new LfmError(`${input.name} formula must start with =LAMBDA.`);
     }
@@ -365,18 +525,14 @@ export function upsertFunctions(inputs: readonly LibraryInput[], libraryDir?: st
     }
 
     const children = findLibraryChildren(input.formula, input.name);
-    const record: LibraryFunction = {
-      name: input.name,
-      formula: input.formula,
-      comment: input.comment ?? "",
-      children,
-      allChildren: [],
-    };
+    const existing = records.get(input.name);
+    const record = existing ?? createRecord(input, children);
+    if (existing) applyInput(existing, input, children);
     records.set(record.name, record);
     written.set(record.name, record);
   }
 
-  const toWrite = new Map<string, LibraryFunction>();
+  const toWrite = new Map<string, StoredFunction>();
   for (const name of written.keys()) {
     for (const record of propagateAllChildren(records, name)) {
       toWrite.set(record.name, record);
@@ -391,7 +547,7 @@ export function upsertFunctions(inputs: readonly LibraryInput[], libraryDir?: st
   }
 
   return {
-    functions: Array.from(written.values()),
+    functions: Array.from(written.values()).map(toPublic),
     warnings,
     updated: Array.from(toWrite.keys()).filter((name) => !written.has(name)),
   };
@@ -433,7 +589,7 @@ export function libraryClosure(names: readonly string[], libraryDir?: string): L
       missing.push(name);
       continue;
     }
-    functions.push(record);
+    functions.push(toPublic(record));
     queue.push(...record.children);
   }
 

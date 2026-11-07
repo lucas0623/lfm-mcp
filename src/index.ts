@@ -25,6 +25,8 @@ export type {
   LibraryInput,
   LibraryIssue,
   LibraryList,
+  LibraryListFilter,
+  LibraryRole,
   LibraryValidation,
   LibraryWriteResult,
 } from "./library.ts";
